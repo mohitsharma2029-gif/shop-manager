@@ -319,7 +319,7 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
 //# sourceMappingURL=babel.min.js.map
 </script>
 
-<script type="text/babel" data-presets="react">
+<script id="app-source" type="text/plain">
 const { useState, useEffect, useCallback } = React;
 
 /* ── Google Fonts ── */
@@ -1844,6 +1844,15 @@ const rootEl = document.getElementById('root');
 const root = ReactDOM.createRoot(rootEl);
 root.render(<App />);
 
+</script>
+<script>
+  (function() {
+    var source = document.getElementById('app-source').textContent;
+    var output = Babel.transform(source, { presets: [["react", { runtime: "classic" }]] }).code;
+    var script = document.createElement('script');
+    script.text = output;
+    document.body.appendChild(script);
+  })();
 </script>
 </body>
 </html>
