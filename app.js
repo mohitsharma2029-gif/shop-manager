@@ -4676,14 +4676,68 @@ function PayrollPage({
 /* ── Settings Page ── */
 function SettingsPage({
   settings,
-  saveSettings
+  saveSettings,
+  saveStaff,
+  saveAtt,
+  savePay,
+  saveAdvances,
+  saveCommission
 }) {
   const [form, setForm] = useState(settings);
   const [saved, setSaved] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
   const handleSave = async () => {
     await saveSettings(form);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
+  };
+  const handleImportFile = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const items = [];
+      if (data.staff) {
+        await saveStaff(data.staff);
+        items.push(`Staff (${data.staff.length} members)`);
+      }
+      if (data.att) {
+        await saveAtt(data.att);
+        items.push('Attendance history');
+      }
+      if (data.pay) {
+        await savePay(data.pay);
+        items.push('Payroll records');
+      }
+      if (data.settings) {
+        await saveSettings(data.settings);
+        setForm(data.settings);
+        items.push('Settings');
+      }
+      if (data.advances) {
+        await saveAdvances(data.advances);
+        items.push('Salary advances');
+      }
+      if (data.commission) {
+        await saveCommission(data.commission);
+        items.push('Commission data');
+      }
+      setImportResult({
+        ok: true,
+        items
+      });
+    } catch (err) {
+      setImportResult({
+        ok: false,
+        error: err.message
+      });
+    }
+    setImporting(false);
+    e.target.value = '';
   };
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4820,6 +4874,86 @@ function SettingsPage({
       transition: 'background 0.3s'
     }
   }, saved ? '✅ Settings Saved!' : 'Save Settings'), /*#__PURE__*/React.createElement("div", {
+    className: "card-shadow",
+    style: {
+      background: '#fff',
+      borderRadius: 20,
+      padding: '20px',
+      marginTop: 16
+    }
+  }, /*#__PURE__*/React.createElement(SectionLabel, null, "📥 Import Data from Backup"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#6B7280',
+      marginBottom: 14,
+      lineHeight: 1.6
+    }
+  }, "Upload the backup file you downloaded from Settings → Export My Data on your other device — this brings your real staff, attendance, payroll, and commission history into this cloud database."), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 8,
+      border: '2px dashed #C7D2FE',
+      borderRadius: 16,
+      padding: '24px 16px',
+      cursor: importing ? 'default' : 'pointer',
+      background: '#F8FAFF',
+      opacity: importing ? 0.6 : 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      color: '#1E1B4B',
+      fontSize: 14
+    }
+  }, importing ? 'Importing...' : 'Tap to Upload Backup File'), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#94A3B8'
+    }
+  }, "shop-manager-backup.json"), /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".json",
+    onChange: handleImportFile,
+    disabled: importing,
+    style: {
+      display: 'none'
+    }
+  })), importResult && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12,
+      background: importResult.ok ? '#DCFCE7' : '#FFE4E8',
+      border: `1.5px solid ${importResult.ok ? '#86EFAC' : '#FCA5A5'}`,
+      borderRadius: 12,
+      padding: '12px'
+    }
+  }, importResult.ok ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      color: '#15803D',
+      fontSize: 13,
+      marginBottom: 4
+    }
+  }, "✅ Imported:"), importResult.items.map((it, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      fontSize: 12,
+      color: '#15803D'
+    }
+  }, "• ", it)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#166534',
+      marginTop: 6
+    }
+  }, "Refresh the page to see it everywhere.")) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      color: '#BE123C',
+      fontSize: 13
+    }
+  }, "❌ Import failed: ", importResult.error))), /*#__PURE__*/React.createElement("div", {
     style: {
       background: '#F8FAFF',
       border: '1px solid #E2E8F0',
