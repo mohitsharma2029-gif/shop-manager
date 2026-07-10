@@ -2433,6 +2433,8 @@ function PayrollPage({
     note: ''
   });
   const [showPayoutForm, setShowPayoutForm] = useState(null); // staffId or null
+  const [payoutEntryIds, setPayoutEntryIds] = useState(null); // entry ids being settled by this payout, or null for a free-form payment
+  const [checkedSales, setCheckedSales] = useState({}); // {staffId: {entryId: true}} — which weeks are ticked for payment
   const [showLedger, setShowLedger] = useState(null); // staffId or null
   const [confirmClearCommission, setConfirmClearCommission] = useState(false);
   const [payoutAmount, setPayoutAmount] = useState('');
@@ -2472,6 +2474,28 @@ function PayrollPage({
   const commissionEarned = s => Math.round(totalSales(s.id) * (Number(s.commissionRate) || 0) / 100);
   const totalPaidOut = sid => cPayouts(sid).reduce((a, b) => a + Number(b.amount || 0), 0);
   const balanceDue = s => commissionEarned(s) - totalPaidOut(s.id);
+  /* Weeks not yet marked paid — this is what shows in the pending list. Once a week is checked off and paid, it drops out of this list and lives only in the Ledger. */
+  const unpaidSales = sid => cSales(sid).filter(e => !e.paid);
+  const paidSalesCount = sid => cSales(sid).filter(e => e.paid).length;
+  const toggleSalesCheck = (staffId, entryId) => {
+    setCheckedSales(prev => {
+      const cur = {
+        ...(prev[staffId] || {})
+      };
+      if (cur[entryId]) delete cur[entryId];else cur[entryId] = true;
+      return {
+        ...prev,
+        [staffId]: cur
+      };
+    });
+  };
+  const checkedIdsFor = staffId => Object.keys(checkedSales[staffId] || {}).filter(id => checkedSales[staffId][id]);
+  const selectedCommissionAmt = s => {
+    const ids = checkedIdsFor(s.id);
+    if (ids.length === 0) return 0;
+    const rate = Number(s.commissionRate) || 0;
+    return cSales(s.id).filter(e => ids.includes(e.id)).reduce((a, b) => a + Math.round(Number(b.amount || 0) * rate / 100), 0);
+  };
   const openSalesForm = (staffId = '') => {
     setSalesForm({
       staffId,
@@ -2516,12 +2540,17 @@ function PayrollPage({
       }
     });
   };
-  const openPayoutForm = staffId => {
-    setPayoutAmount('');
+  const openPayoutForm = (staffId, presetAmount = null, entryIds = null) => {
+    setPayoutAmount(presetAmount != null ? String(presetAmount) : '');
+    setPayoutEntryIds(entryIds);
     setShowPayoutForm(staffId);
   };
+  const openPaySelectedWeeks = s => {
+    const ids = checkedIdsFor(s.id);
+    if (ids.length === 0) return;
+    openPayoutForm(s.id, selectedCommissionAmt(s), ids);
+  };
   const handlePayout = async () => {
-    const s = staff.find(x => x.id === showPayoutForm);
     const amt = Number(payoutAmount);
     if (!amt || amt <= 0) return;
     const rec = commission[showPayoutForm] || {
@@ -2531,26 +2560,47 @@ function PayrollPage({
     const list = [...rec.payouts, {
       id: Date.now().toString(),
       amount: amt,
-      date: dKey(today)
+      date: dKey(today),
+      entryIds: payoutEntryIds && payoutEntryIds.length ? payoutEntryIds : undefined
     }];
+    const updatedSales = payoutEntryIds && payoutEntryIds.length ? rec.sales.map(e => payoutEntryIds.includes(e.id) ? {
+      ...e,
+      paid: true,
+      paidOn: dKey(today)
+    } : e) : rec.sales;
     await saveCommission({
       ...commission,
       [showPayoutForm]: {
         ...rec,
+        sales: updatedSales,
         payouts: list
       }
     });
+    if (payoutEntryIds && payoutEntryIds.length) {
+      setCheckedSales(prev => ({
+        ...prev,
+        [showPayoutForm]: {}
+      }));
+    }
     setShowPayoutForm(null);
+    setPayoutEntryIds(null);
   };
   const handleDelPayout = async (staffId, id) => {
     const rec = commission[staffId] || {
       sales: [],
       payouts: []
     };
+    const payout = rec.payouts.find(x => x.id === id);
+    const updatedSales = payout && payout.entryIds && payout.entryIds.length ? rec.sales.map(e => payout.entryIds.includes(e.id) ? {
+      ...e,
+      paid: false,
+      paidOn: undefined
+    } : e) : rec.sales;
     await saveCommission({
       ...commission,
       [staffId]: {
         ...rec,
+        sales: updatedSales,
         payouts: rec.payouts.filter(x => x.id !== id)
       }
     });
@@ -2558,6 +2608,7 @@ function PayrollPage({
   const handleClearCommission = async () => {
     const ok = await saveCommission({});
     setConfirmClearCommission(false);
+    setCheckedSales({});
     if (ok) {
       alert('✅ Commission data cleared. If you still see old entries after this, close and reopen the app fully (not just this tab) before re-importing.');
     } else {
@@ -2569,7 +2620,6 @@ function PayrollPage({
     if (!file) return;
     const text = await file.text();
     const rawLines = text.replace(/^\uFEFF/, '').replace(/\r/g, '').trim().split('\n').filter(l => l.trim());
-    /* SSMS's "Save Results As CSV" exports data-only, no header row — while Power BI's export includes one. Detect which by checking if column 2 of row 1 is a number (data) or text like "SalesAmount"/"Year" (header). */
     const firstRowCols = rawLines[0].split(',').map(x => x.trim().replace(/"/g, ''));
     const hasHeader = isNaN(Number(firstRowCols[1]));
     const header = hasHeader ? firstRowCols.map(h => h.toLowerCase()) : [];
@@ -2579,7 +2629,6 @@ function PayrollPage({
     };
     let count = 0;
 
-    /* Matches "HITESH" from a Power BI export against staff record "HITESH SHARMA" — first-name / partial match, not exact-only. NICKNAMES covers cases where RetailGraph uses a name that doesn't overlap at all with the staff record (e.g. "JITU" for "JITENDRA MANANI"). */
     const NICKNAMES = {
       jitu: 'jitendra manani'
     };
@@ -2593,7 +2642,6 @@ function PayrollPage({
       return staff.find(s => s.id === rawName) || staff.find(s => s.name.toLowerCase() === n) || staff.find(s => s.name.toLowerCase().split(' ')[0] === n) || staff.find(s => s.name.toLowerCase().includes(n) || n.includes(s.name.toLowerCase().split(' ')[0]));
     };
 
-    /* Detect raw Power BI line-item export (SalesmanName, Month, Year, Day, ID Sales, ...) vs the simple pre-summarized format */
     const idxSalesman = header.findIndex(h => h.includes('salesman') || h === 'name');
     const idxSales = header.findIndex(h => h === 'id sales' || h.includes('sales') && !h.includes('salesman'));
     const idxMonth = header.findIndex(h => h === 'month');
@@ -2615,7 +2663,6 @@ function PayrollPage({
       december: 12
     };
     if (isRawExport) {
-      /* Aggregate: sum ID Sales per (Salesman, Month, Year), and track the actual min/max transaction date within that group from the Year/Month/Day columns */
       const groups = {};
       lines.forEach(line => {
         const cols = line.split(',').map(x => x?.trim().replace(/"/g, ''));
@@ -2849,7 +2896,6 @@ function PayrollPage({
     }
     const rate = Number(s.commissionRate) || 0;
 
-    /* Week = Monday to Saturday, derived from each entry's actual sales/payout date (not the import date) */
     const weekInfo = dateStr => {
       const [y, m, d] = dateStr.split('-').map(Number);
       const dt = new Date(y, m - 1, d);
@@ -2857,7 +2903,7 @@ function PayrollPage({
       const monday = new Date(dt);
       monday.setDate(dt.getDate() + (day === 0 ? -6 : 1 - day));
       const saturday = new Date(monday);
-      saturday.setDate(monday.getDate() + 5); // Mon–Sat week (Sunday excluded — cash-paid separately)
+      saturday.setDate(monday.getDate() + 5);
       const fmtD = (dd, withYear) => dd.toLocaleDateString('en-IN', withYear ? {
         day: 'numeric',
         month: 'short',
@@ -2879,6 +2925,7 @@ function PayrollPage({
         type: 'sales',
         label: `Sales Recorded — ${fmtSalesRange(x)}${x.note && !x.dateFrom ? ` (${x.note})` : ''}${spansWeeks ? ' ⚠️ spans multiple weeks' : ''}`,
         salesAmt: x.amount,
+        paid: !!x.paid,
         delta: Math.round(x.amount * rate / 100)
       };
     }), ...cPayouts(s.id).map(x => ({
@@ -3046,7 +3093,17 @@ function PayrollPage({
           color: '#1E1B4B',
           fontSize: 12.5
         }
-      }, r.label), /*#__PURE__*/React.createElement("div", {
+      }, r.label, r.type === 'sales' && r.paid && /*#__PURE__*/React.createElement("span", {
+        style: {
+          marginLeft: 6,
+          fontSize: 10,
+          fontWeight: 700,
+          color: '#15803D',
+          background: '#DCFCE7',
+          padding: '1px 7px',
+          borderRadius: 8
+        }
+      }, "✓ Paid")), /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 10.5,
           color: '#94A3B8',
@@ -3470,6 +3527,7 @@ function PayrollPage({
       }
     }, "🖨️ Print / Save as PDF"));
   }
+
   return /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '20px 16px',
@@ -3785,7 +3843,7 @@ function PayrollPage({
       color: '#94A3B8',
       marginTop: 2
     }
-  }, "Pay anytime — not tied to salary date")), /*#__PURE__*/React.createElement("div", {
+  }, "Tick weeks below, then pay — amount is calculated for you")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
       gap: 6
@@ -3873,6 +3931,11 @@ function PayrollPage({
     const earned = commissionEarned(s),
       paid = totalPaidOut(s.id),
       due = balanceDue(s);
+    const pending = unpaidSales(s.id);
+    const paidCount = paidSalesCount(s.id);
+    const rate = Number(s.commissionRate) || 0;
+    const selCount = checkedIdsFor(s.id).length;
+    const selAmt = selectedCommissionAmt(s);
     return /*#__PURE__*/React.createElement("div", {
       key: s.id,
       style: {
@@ -3920,36 +3983,92 @@ function PayrollPage({
         padding: '6px 10px',
         marginBottom: 8
       }
-    }, "Paid ", fmt(Math.abs(due)), " more than earned so far — will auto-adjust as new sales are added."), cSales(s.id).length > 0 && /*#__PURE__*/React.createElement("div", {
+    }, "Paid ", fmt(Math.abs(due)), " more than earned so far — will auto-adjust as new sales are added."), pending.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 8
       }
-    }, cSales(s.id).map(entry => /*#__PURE__*/React.createElement("div", {
-      key: entry.id,
+    }, pending.map(entry => {
+      const checked = !!(checkedSales[s.id] || {})[entry.id];
+      const entryComm = Math.round(Number(entry.amount || 0) * rate / 100);
+      return /*#__PURE__*/React.createElement("label", {
+        key: entry.id,
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: 10.5,
+          color: '#9D174D',
+          padding: '4px 0',
+          cursor: 'pointer'
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8
+        }
+      }, /*#__PURE__*/React.createElement("input", {
+        type: "checkbox",
+        checked: checked,
+        onChange: () => toggleSalesCheck(s.id, entry.id),
+        style: {
+          width: 15,
+          height: 15,
+          accentColor: '#BE185D',
+          cursor: 'pointer',
+          flexShrink: 0
+        }
+      }), "Sales: ", fmtSalesRange(entry), entry.note && !entry.dateFrom ? ` · ${entry.note}` : '', " · comm ", fmt(entryComm)), /*#__PURE__*/React.createElement("span", {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6
+        }
+      }, fmt(entry.amount), /*#__PURE__*/React.createElement("button", {
+        onClick: ev => {
+          ev.preventDefault();
+          handleDelSales(s.id, entry.id);
+        },
+        style: {
+          background: 'none',
+          border: 'none',
+          color: '#F43F5E',
+          cursor: 'pointer',
+          padding: 0,
+          display: 'flex'
+        }
+      }, Ic.trash)));
+    })), paidCount > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
+        fontSize: 10,
+        color: '#15803D',
+        marginBottom: 8,
+        fontWeight: 600
+      }
+    }, "✓ ", paidCount, " week", paidCount > 1 ? 's' : '', " already paid — see Ledger for details"), selCount > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: '#FCE7F3',
+        border: '1.5px solid #F9A8D4',
+        borderRadius: 10,
+        padding: '8px 10px',
+        marginBottom: 8,
         display: 'flex',
         justifyContent: 'space-between',
-        fontSize: 10.5,
-        color: '#9D174D',
-        padding: '2px 0'
+        alignItems: 'center'
       }
-    }, /*#__PURE__*/React.createElement("span", null, "Sales: ", fmtSalesRange(entry), entry.note && !entry.dateFrom ? ` · ${entry.note}` : ''), /*#__PURE__*/React.createElement("span", {
+    }, /*#__PURE__*/React.createElement("span", {
       style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6
+        fontSize: 11,
+        fontWeight: 700,
+        color: '#9D174D'
       }
-    }, fmt(entry.amount), /*#__PURE__*/React.createElement("button", {
-      onClick: () => handleDelSales(s.id, entry.id),
+    }, selCount, " week", selCount > 1 ? 's' : '', " selected"), /*#__PURE__*/React.createElement("span", {
       style: {
-        background: 'none',
-        border: 'none',
-        color: '#F43F5E',
-        cursor: 'pointer',
-        padding: 0,
-        display: 'flex'
+        fontSize: 13,
+        fontWeight: 800,
+        color: '#BE185D'
       }
-    }, Ic.trash))))), cPayouts(s.id).length > 0 && /*#__PURE__*/React.createElement("div", {
+    }, fmt(selAmt))), cPayouts(s.id).length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 8,
         borderTop: '1px dashed #FBCFE8',
@@ -3999,7 +4118,21 @@ function PayrollPage({
         fontSize: 12,
         cursor: 'pointer'
       }
-    }, "📒 View Ledger"), /*#__PURE__*/React.createElement("button", {
+    }, "📒 View Ledger"), selCount > 0 ? /*#__PURE__*/React.createElement("button", {
+      onClick: () => openPaySelectedWeeks(s),
+      className: "btn-success",
+      style: {
+        flex: 1,
+        border: 'none',
+        color: '#fff',
+        borderRadius: 10,
+        padding: '9px',
+        fontWeight: 700,
+        fontSize: 12,
+        cursor: 'pointer',
+        fontFamily: 'DM Sans,sans-serif'
+      }
+    }, "Pay Selected (", fmt(selAmt), ")") : /*#__PURE__*/React.createElement("button", {
       onClick: () => openPayoutForm(s.id),
       className: "btn-success",
       style: {
@@ -4240,7 +4373,10 @@ function PayrollPage({
       fontFamily: 'DM Sans,sans-serif'
     }
   }, "Clear All")))), showPayoutForm && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setShowPayoutForm(null),
+    onClick: () => {
+      setShowPayoutForm(null);
+      setPayoutEntryIds(null);
+    },
     style: {
       position: 'fixed',
       inset: 0,
@@ -4271,7 +4407,7 @@ function PayrollPage({
   }, "Pay Commission"), (() => {
     const s = staff.find(x => x.id === showPayoutForm);
     const due = s ? balanceDue(s) : 0;
-    const label = due > 0 ? `Balance due: ${fmt(due)}` : due < 0 ? `Already ${fmt(Math.abs(due))} in advance` : 'Fully settled — this will count as an advance';
+    const label = payoutEntryIds && payoutEntryIds.length ? `Paying for ${payoutEntryIds.length} selected week${payoutEntryIds.length > 1 ? 's' : ''} — amount auto-filled` : due > 0 ? `Balance due: ${fmt(due)}` : due < 0 ? `Already ${fmt(Math.abs(due))} in advance` : 'Fully settled — this will count as an advance';
     return /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
@@ -4304,7 +4440,10 @@ function PayrollPage({
       gap: 10
     }
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowPayoutForm(null),
+    onClick: () => {
+      setShowPayoutForm(null);
+      setPayoutEntryIds(null);
+    },
     style: {
       flex: 1,
       border: '1.5px solid #E2E8F0',
